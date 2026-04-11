@@ -108,9 +108,19 @@ def _build_node(row: dict[str, Any]) -> DeploymentNode | None:
             row.get("location_name"),
             "Ubicacion sin nombre",
         ),
-        timestamp=_normalize_timestamp(row.get("timestamp")),
+        timestamp="",
         sensorType=_normalize_optional_string(row.get("sensor_type")),
     )
+
+
+def _extract_first_timestamp(
+    row: dict[str, Any],
+    keys: tuple[str, ...],
+) -> str:
+    for key in keys:
+        if key in row:
+            return _normalize_timestamp(row.get(key))
+    return ""
 
 
 async def get_health() -> dict[str, str]:
@@ -142,11 +152,11 @@ async def list_deployments() -> list[DeploymentNode]:
           latitude,
           longitude,
           location_name,
-          timestamp
+          deployed_at
         FROM deployments
         WHERE latitude IS NOT NULL
           AND longitude IS NOT NULL
-        ORDER BY timestamp DESC;
+        ORDER BY deployed_at DESC;
         """
     )
 
@@ -156,6 +166,8 @@ async def list_deployments() -> list[DeploymentNode]:
         node = _build_node(row)
         if node is None:
             continue
+
+        node.timestamp = _extract_first_timestamp(row, ("deployed_at",))
 
         if node.deployment_id not in deployments_by_id:
             deployments_by_id[node.deployment_id] = node
@@ -174,10 +186,10 @@ async def get_deployment_detail(deployment_id: str) -> DeploymentDetail:
 
     deployment_rows = await client.execute(
         f"""
-        SELECT deployment_id, board_id, latitude, longitude, location_name, timestamp
+        SELECT deployment_id, board_id, latitude, longitude, location_name, deployed_at
         FROM deployments
         WHERE deployment_id = '{safe_deployment_id}'
-        ORDER BY timestamp DESC
+        ORDER BY deployed_at DESC
         LIMIT 1;
         """
     )
@@ -191,20 +203,20 @@ async def get_deployment_detail(deployment_id: str) -> DeploymentDetail:
 
     sensor_rows = await client.execute(
         f"""
-        SELECT sensor_type, timestamp
+        SELECT sensor_type, registered_at
         FROM devices
         WHERE board_id = '{_escape_sql_literal(node.board_id)}'
-        ORDER BY timestamp DESC
+        ORDER BY registered_at DESC
         LIMIT 1;
         """
     )
 
     telemetry_rows = await client.execute(
         f"""
-        SELECT co2, temp, rh, errors, timestamp
+        SELECT co2, temp, rh, errors, ts
         FROM telemetria_datos
         WHERE deployment_id = '{safe_deployment_id}'
-        ORDER BY timestamp DESC
+        ORDER BY ts DESC
         LIMIT 1;
         """
     )
@@ -217,7 +229,7 @@ async def get_deployment_detail(deployment_id: str) -> DeploymentDetail:
         latitude=node.latitude,
         longitude=node.longitude,
         locationName=node.location_name,
-        timestamp=node.timestamp,
+        timestamp=_extract_first_timestamp(deployment_rows[0], ("deployed_at",)),
         sensorType=_normalize_optional_string(
             sensor_rows[0].get("sensor_type") if sensor_rows else None
         ),
@@ -242,17 +254,17 @@ async def get_deployment_telemetry(
 
     rows = await client.execute(
         f"""
-        SELECT timestamp, co2, temp, rh
+        SELECT ts, co2, temp, rh
         FROM telemetria_datos
         WHERE deployment_id = '{safe_deployment_id}'
-          AND timestamp > dateadd('h', -{hours}, now())
-        ORDER BY timestamp ASC;
+          AND ts > dateadd('h', -{hours}, now())
+        ORDER BY ts ASC;
         """
     )
 
     return [
         TelemetryPoint(
-            timestamp=_normalize_timestamp(row.get("timestamp")),
+            timestamp=_extract_first_timestamp(row, ("ts",)),
             co2=_normalize_float(row.get("co2")),
             temp=_normalize_float(row.get("temp")),
             rh=_normalize_float(row.get("rh")),
