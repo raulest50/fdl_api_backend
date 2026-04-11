@@ -30,7 +30,10 @@ class QuestDbClient:
         if response.status_code != 200:
             raise HTTPException(
                 status_code=502,
-                detail=f"QuestDB respondio con estado {response.status_code}.",
+                detail=(
+                    f"QuestDB respondio con estado {response.status_code}: "
+                    f"{response.text.strip()}"
+                ),
             )
 
         payload = response.json()
@@ -143,16 +146,21 @@ async def list_deployments() -> list[DeploymentNode]:
         FROM deployments
         WHERE latitude IS NOT NULL
           AND longitude IS NOT NULL
-        LATEST ON timestamp PARTITION BY deployment_id
         ORDER BY timestamp DESC;
         """
     )
 
-    return [
-        node
-        for node in (_build_node(row) for row in rows)
-        if node is not None
-    ]
+    deployments_by_id: dict[str, DeploymentNode] = {}
+
+    for row in rows:
+        node = _build_node(row)
+        if node is None:
+            continue
+
+        if node.deployment_id not in deployments_by_id:
+            deployments_by_id[node.deployment_id] = node
+
+    return list(deployments_by_id.values())
 
 
 async def get_deployment_detail(deployment_id: str) -> DeploymentDetail:
