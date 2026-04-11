@@ -23,6 +23,7 @@ frontera-data-labs-api/
   docker-compose.yml
   .env.example
   deploy.sh
+  setup_https_proxy.sh
 ```
 
 ## Endpoints
@@ -52,6 +53,34 @@ La API quedara escuchando en `127.0.0.1:8000`.
 3. Ejecutar `./deploy.sh`.
 4. Verificar con `curl http://127.0.0.1:8000/health`.
 5. Si todo responde bien, el frontend en Render solo necesita apuntar `VITE_API_BASE_URL` al dominio HTTPS de esta API.
+
+## Proxy HTTPS sin comprar dominio
+
+Si no quieres comprar dominio, puedes usar un hostname gratis basado en tu IP con `sslip.io`.
+
+Ejemplo para esta VPS:
+
+```bash
+sudo bash setup_https_proxy.sh --host 187.124.90.77.sslip.io
+```
+
+Opcionalmente puedes pasar email a Certbot:
+
+```bash
+sudo bash setup_https_proxy.sh --host 187.124.90.77.sslip.io --email tu-correo@ejemplo.com
+```
+
+Cuando termine, la API quedara disponible en:
+
+```text
+https://187.124.90.77.sslip.io
+```
+
+Y en Render deberias configurar:
+
+```env
+VITE_API_BASE_URL=https://187.124.90.77.sslip.io
+```
 
 ## Variables de entorno
 
