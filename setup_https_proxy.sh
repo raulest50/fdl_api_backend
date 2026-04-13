@@ -5,6 +5,9 @@ HOSTNAME_VALUE=""
 API_PORT="8000"
 SITE_NAME="frontera-data-labs-api"
 EMAIL=""
+RATE_LIMIT_ZONE_NAME="frontera_api_limit"
+RATE_LIMIT_RATE="5r/s"
+RATE_LIMIT_BURST="20"
 
 usage() {
   cat <<'EOF'
@@ -70,10 +73,17 @@ fi
 
 echo "Instalando dependencias del proxy HTTPS..."
 apt-get update
-apt-get install -y nginx certbot python3-certbot-nginx
+apt-get install -y nginx certbot python3-certbot-nginx logrotate
 
+RATE_LIMIT_CONF="/etc/nginx/conf.d/${SITE_NAME}-rate-limit.conf"
 NGINX_CONF="/etc/nginx/sites-available/${SITE_NAME}.conf"
 NGINX_LINK="/etc/nginx/sites-enabled/${SITE_NAME}.conf"
+LOGROTATE_CONF="/etc/logrotate.d/${SITE_NAME}"
+
+echo "Escribiendo zona de rate limiting en ${RATE_LIMIT_CONF}..."
+cat > "${RATE_LIMIT_CONF}" <<EOF
+limit_req_zone \$binary_remote_addr zone=${RATE_LIMIT_ZONE_NAME}:10m rate=${RATE_LIMIT_RATE};
+EOF
 
 echo "Escribiendo configuracion Nginx en ${NGINX_CONF}..."
 cat > "${NGINX_CONF}" <<EOF
@@ -84,6 +94,27 @@ server {
 
     access_log off;
     error_log /var/log/nginx/${SITE_NAME}.error.log warn;
+    limit_req_status 429;
+
+    location = /health {
+        limit_req zone=${RATE_LIMIT_ZONE_NAME} burst=${RATE_LIMIT_BURST} nodelay;
+        proxy_pass http://127.0.0.1:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location /api/ {
+        limit_req zone=${RATE_LIMIT_ZONE_NAME} burst=${RATE_LIMIT_BURST} nodelay;
+        proxy_pass http://127.0.0.1:${API_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:${API_PORT};
@@ -96,11 +127,27 @@ server {
 }
 EOF
 
+echo "Escribiendo politica de rotacion para el error log de Nginx..."
+cat > "${LOGROTATE_CONF}" <<EOF
+/var/log/nginx/${SITE_NAME}.error.log {
+    size 1M
+    rotate 2
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+
 ln -sf "${NGINX_CONF}" "${NGINX_LINK}"
 
 echo "Validando configuracion Nginx..."
 nginx -t
 systemctl reload nginx || systemctl restart nginx
+
+if command -v logrotate >/dev/null 2>&1; then
+  logrotate -d "${LOGROTATE_CONF}" >/dev/null
+fi
 
 CERTBOT_ARGS=(
   --nginx
@@ -122,5 +169,7 @@ certbot "${CERTBOT_ARGS[@]}"
 echo
 echo "Listo."
 echo "URL publica de la API: https://${HOSTNAME_VALUE}"
+echo "Rate limiting: ${RATE_LIMIT_RATE} con burst ${RATE_LIMIT_BURST} para /health y /api/"
+echo "Rotacion de Nginx: 1 MB x 2 archivos para ${SITE_NAME}.error.log"
 echo "En Render configura:"
 echo "VITE_API_BASE_URL=https://${HOSTNAME_VALUE}"

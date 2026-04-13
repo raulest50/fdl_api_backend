@@ -27,6 +27,6 @@ async def fetch_deployment_detail(
 @router.get("/{deployment_id}/telemetry", response_model=List[TelemetryPoint])
 async def fetch_deployment_telemetry(
     deployment_id: str = Path(..., min_length=3),
-    hours: int = Query(default=24, ge=1, le=168),
+    hours: int = Query(default=24, ge=1, le=24),
 ):
     return await get_deployment_telemetry(deployment_id, hours)

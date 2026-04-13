@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-CMD ["sh", "-c", "uvicorn app.main:app --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host ${API_HOST:-0.0.0.0} --port ${API_PORT:-8000} --log-level error --no-access-log"]
