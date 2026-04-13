@@ -23,6 +23,7 @@ frontera-data-labs-api/
   docker-compose.yml
   .env.example
   deploy.sh
+  setup_questdb.sh
   setup_https_proxy.sh
 ```
 
@@ -38,6 +39,7 @@ frontera-data-labs-api/
 ```bash
 git clone <tu-repo>
 cd FronteraDataLabs/frontera-data-labs-api
+sudo bash setup_questdb.sh
 cp .env.example .env
 nano .env
 chmod +x deploy.sh
@@ -46,14 +48,45 @@ chmod +x deploy.sh
 
 La API quedara escuchando en `127.0.0.1:8000`.
 
+QuestDB quedara disponible en `http://127.0.0.1:9000`.
+
 ## Workflow recomendado
 
 1. Hacer `git pull` en la VPS cuando subas cambios nuevos al repo.
 2. Entrar a `FronteraDataLabs/frontera-data-labs-api`.
-3. Ejecutar `./deploy.sh`.
-4. Verificar con `curl http://127.0.0.1:8000/health`.
-5. Confirmar la politica de logs del contenedor con la salida de `docker inspect` que imprime el script.
-6. Si todo responde bien, el frontend en Render solo necesita apuntar `VITE_API_BASE_URL` al dominio HTTPS de esta API.
+3. Ejecutar `sudo bash setup_questdb.sh` si la VPS es nueva o si QuestDB no existe.
+4. Ejecutar `./deploy.sh`.
+5. Verificar con `curl http://127.0.0.1:8000/health`.
+6. Confirmar la politica de logs del contenedor con la salida de `docker inspect` que imprime el script.
+7. Si todo responde bien, el frontend en Render solo necesita apuntar `VITE_API_BASE_URL` al dominio HTTPS de esta API.
+
+## Setup de QuestDB
+
+Para reconstruir QuestDB desde cero en una VPS limpia:
+
+```bash
+sudo bash setup_questdb.sh
+```
+
+El script:
+
+- crea un volumen persistente Docker para QuestDB
+- descarga y levanta `questdb/questdb`
+- publica:
+  - `9000` para Web Console y REST API
+  - `8812` para PostgreSQL wire protocol
+- crea automaticamente las tablas base:
+  - `devices`
+  - `deployments`
+  - `telemetria_datos`
+
+Verificaciones rapidas:
+
+```bash
+docker ps
+curl http://127.0.0.1:9000
+curl --get http://127.0.0.1:9000/exec --data-urlencode "query=SHOW TABLES;"
+```
 
 ## Proxy HTTPS sin comprar dominio
 
