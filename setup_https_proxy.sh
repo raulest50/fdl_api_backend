@@ -82,6 +82,9 @@ server {
     listen [::]:80;
     server_name ${HOSTNAME_VALUE};
 
+    access_log off;
+    error_log /var/log/nginx/${SITE_NAME}.error.log warn;
+
     location / {
         proxy_pass http://127.0.0.1:${API_PORT};
         proxy_http_version 1.1;

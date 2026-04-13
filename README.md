@@ -52,7 +52,8 @@ La API quedara escuchando en `127.0.0.1:8000`.
 2. Entrar a `FronteraDataLabs/frontera-data-labs-api`.
 3. Ejecutar `./deploy.sh`.
 4. Verificar con `curl http://127.0.0.1:8000/health`.
-5. Si todo responde bien, el frontend en Render solo necesita apuntar `VITE_API_BASE_URL` al dominio HTTPS de esta API.
+5. Confirmar la politica de logs del contenedor con la salida de `docker inspect` que imprime el script.
+6. Si todo responde bien, el frontend en Render solo necesita apuntar `VITE_API_BASE_URL` al dominio HTTPS de esta API.
 
 ## Proxy HTTPS sin comprar dominio
 
@@ -87,6 +88,18 @@ VITE_API_BASE_URL=https://187.124.90.77.sslip.io
 - `QUESTDB_BASE_URL=http://127.0.0.1:9000`
 - `API_PORT=8000`
 - `API_CORS_ORIGINS=http://localhost:5174,https://tu-frontend.onrender.com`
+
+## Logging de produccion
+
+Por defecto, el backend queda en modo silencioso de produccion:
+
+- `uvicorn --log-level error --no-access-log`
+- Docker con rotacion `json-file`
+- `max-size=50m`
+- `max-file=3`
+- Nginx con `access_log off`
+
+Esto busca evitar que stdout/stderr del contenedor vuelva a crecer sin limite y que el disco de la VPS se llene por logs de acceso normales.
 
 ## Variable del frontend
 
@@ -132,3 +145,31 @@ Despues de eso, ya no hace falta exponer QuestDB al navegador. El flujo queda:
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/api/deployments
 ```
+
+## Verificacion de logs
+
+```bash
+docker inspect frontera-data-labs-api --format '{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}'
+docker logs --tail 50 frontera-data-labs-api
+```
+
+La primera linea debe mostrar `json-file` con `max-size` y `max-file`. La segunda no deberia llenarse con un log por cada request normal.
+
+## Tech Stack Actual
+
+- Frontend: React 19 + TypeScript 6 + Vite 8 + Cesium + Resium, desplegado como Static Site en Render.
+- Backend API: FastAPI + httpx + uvicorn, empaquetado con Docker sobre `python:3.12-slim`.
+- Orquestacion local en VPS: Docker Compose con un contenedor para la API.
+- Base de datos: QuestDB en Docker, expuesto en la VPS y consumido por la API via HTTP `/exec`.
+- Sistema operativo VPS: Ubuntu 24.04.
+- Proxy reverso: Nginx en la VPS, apuntando a `127.0.0.1:8000`.
+- HTTPS sin comprar dominio: hostname gratuito basado en IP con `sslip.io`, mas Certbot + Let's Encrypt para TLS.
+- Publicacion del frontend: Render consume la API por HTTPS mediante `VITE_API_BASE_URL`.
+
+## Posibles focos de ineficiencia
+
+- QuestDB puede elevar CPU si recibe consultas frecuentes, sin filtros eficientes, o muchas lecturas repetidas del mismo nodo.
+- La API FastAPI puede gastar CPU si se redepliega seguido, si hay polling agresivo desde el frontend, o si cada request dispara varias consultas seriales.
+- Docker por si solo no suele ser el cuello de botella principal aqui, pero si el disco esta lleno puede degradar mucho todo el stack.
+- Nginx y Certbot normalmente no deberian ser la causa principal de CPU alta en este montaje.
+- `sslip.io` aporta resolucion de nombre, pero no deberia explicar CPU alta sostenida en la VPS.
