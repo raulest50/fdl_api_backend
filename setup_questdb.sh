@@ -13,6 +13,7 @@ QUESTDB_DATA_DIR="${QUESTDB_DATA_DIR:-${QUESTDB_MOUNT_POINT}/data}"
 QUESTDB_LOOP_SIZE_BYTES=$((4 * 1024 * 1024 * 1024))
 MIN_ROOT_HEADROOM_BYTES=$((512 * 1024 * 1024))
 QUESTDB_BASE_URL=""
+READINESS_QUERY="SELECT 1;"
 
 usage() {
   cat <<'EOF'
@@ -172,7 +173,46 @@ ensure_mount() {
 
 run_query() {
   local query="$1"
-  curl -fsS "${QUESTDB_BASE_URL}/exec" --get --data-urlencode "query=${query}" >/dev/null
+  curl --max-time 5 -fsS "${QUESTDB_BASE_URL}/exec" --get --data-urlencode "query=${query}"
+}
+
+wait_for_questdb() {
+  local output=""
+
+  echo "Esperando a que QuestDB responda en ${QUESTDB_BASE_URL}/exec..."
+  for attempt in $(seq 1 30); do
+    if output="$(run_query "${READINESS_QUERY}" 2>/dev/null)"; then
+      if [[ "${output}" == *'"dataset"'* ]]; then
+        return 0
+      fi
+    fi
+
+    sleep 2
+  done
+
+  echo "QuestDB no respondio correctamente a /exec despues de varios intentos."
+  echo "Prueba manual sugerida:"
+  echo "curl --max-time 5 --get ${QUESTDB_BASE_URL}/exec --data-urlencode 'query=${READINESS_QUERY}'"
+  return 1
+}
+
+validate_required_tables() {
+  local tables_output=""
+
+  if ! tables_output="$(run_query "SHOW TABLES;" 2>/dev/null)"; then
+    echo "No fue posible consultar SHOW TABLES; en QuestDB."
+    return 1
+  fi
+
+  for table_name in devices deployments telemetria_datos; do
+    if [[ "${tables_output}" != *"\"${table_name}\""* ]]; then
+      echo "Falta la tabla requerida: ${table_name}"
+      echo "Salida de SHOW TABLES;: ${tables_output}"
+      return 1
+    fi
+  done
+
+  return 0
 }
 
 ensure_mount
@@ -189,24 +229,14 @@ docker update --cpus 0.50 --memory 768m --memory-swap 768m --pids-limit 256 ques
 
 QUESTDB_BASE_URL="http://127.0.0.1:${QUESTDB_HTTP_PORT}"
 
-echo "Esperando a que QuestDB responda en ${QUESTDB_BASE_URL}..."
-for attempt in $(seq 1 30); do
-  if curl -fsS "${QUESTDB_BASE_URL}" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
-  if [[ "${attempt}" -eq 30 ]]; then
-    echo "QuestDB no respondio a tiempo."
-    exit 1
-  fi
-done
+wait_for_questdb
 
 echo "Inicializando tablas base..."
 run_query "CREATE TABLE IF NOT EXISTS devices (
   board_id SYMBOL CAPACITY 256 CACHE,
   sensor_type SYMBOL CAPACITY 16 CACHE,
   registered_at TIMESTAMP
-) TIMESTAMP(registered_at) PARTITION BY MONTH;"
+) TIMESTAMP(registered_at) PARTITION BY MONTH;" >/dev/null
 
 run_query "CREATE TABLE IF NOT EXISTS deployments (
   deployment_id SYMBOL CAPACITY 1024 CACHE,
@@ -215,7 +245,7 @@ run_query "CREATE TABLE IF NOT EXISTS deployments (
   longitude DOUBLE,
   location_name STRING,
   deployed_at TIMESTAMP
-) TIMESTAMP(deployed_at) PARTITION BY MONTH;"
+) TIMESTAMP(deployed_at) PARTITION BY MONTH;" >/dev/null
 
 run_query "CREATE TABLE IF NOT EXISTS telemetria_datos (
   deployment_id SYMBOL CAPACITY 1024 CACHE,
@@ -224,7 +254,13 @@ run_query "CREATE TABLE IF NOT EXISTS telemetria_datos (
   rh DOUBLE,
   errors INT,
   ts TIMESTAMP
-) TIMESTAMP(ts) PARTITION BY DAY;"
+) TIMESTAMP(ts) PARTITION BY DAY;" >/dev/null
+
+echo "Validando tablas base..."
+if ! validate_required_tables; then
+  echo "La inicializacion de QuestDB no dejo todas las tablas requeridas."
+  exit 1
+fi
 
 echo
 echo "Listo."
@@ -238,5 +274,5 @@ echo
 echo "Verificaciones sugeridas:"
 echo "df -h / ${QUESTDB_MOUNT_POINT}"
 echo "docker inspect questdb --format '{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}'"
-echo "curl ${QUESTDB_BASE_URL}"
-echo "curl --get ${QUESTDB_BASE_URL}/exec --data-urlencode 'query=SHOW TABLES;'"
+echo "curl --max-time 5 --get ${QUESTDB_BASE_URL}/exec --data-urlencode 'query=SELECT 1;'"
+echo "curl --max-time 5 --get ${QUESTDB_BASE_URL}/exec --data-urlencode 'query=SHOW TABLES;'"

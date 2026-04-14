@@ -73,7 +73,9 @@ chmod +x deploy.sh
 - crea `QUESTDB_DATA_DIR` dentro de ese filesystem acotado
 - levanta el servicio `questdb` por Compose
 - aplica limites de CPU, memoria y `pids`
+- valida readiness de QuestDB contra `/exec` con timeout
 - crea las tablas `devices`, `deployments` y `telemetria_datos`
+- comprueba que esas tres tablas realmente existan antes de terminar
 
 ## Que hace `deploy.sh`
 
@@ -81,17 +83,53 @@ chmod +x deploy.sh
 - reaplica limites duros de CPU, memoria y `pids` via `docker update`
 - imprime el estado del stack y la politica de logs de ambos contenedores
 
+## Exponer temporalmente la Web Console de QuestDB
+
+Por defecto, QuestDB queda privado en:
+
+```text
+127.0.0.1:9000
+```
+
+Si durante desarrollo quieres abrir temporalmente la consola web desde fuera, usa:
+
+```bash
+sudo bash toggle_questdb_web.sh
+```
+
+El script te pedira:
+
+- `enable` para exponer la consola web publicamente
+- `disable` para volver a dejarla privada
+
+Comportamiento:
+
+- modo publico:
+  - publica la consola web de QuestDB en `http://<IP-DE-TU-VPS>:9000`
+- modo privado:
+  - vuelve a publicar la consola solo en `127.0.0.1:9000`
+
+Importante:
+
+- esto es solo para desarrollo temporal
+- el puerto `8812` sigue privado
+- antes de produccion debes volver a `disable`
+
 ## Verificaciones rapidas
 
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/api/deployments
 curl --get http://127.0.0.1:8000/api/deployments/<DEPLOYMENT_ID>/telemetry --data-urlencode "hours=24"
+curl --max-time 5 --get http://127.0.0.1:9000/exec --data-urlencode "query=SELECT 1;"
+curl --max-time 5 --get http://127.0.0.1:9000/exec --data-urlencode "query=SHOW TABLES;"
 docker inspect frontera-data-labs-api --format '{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}'
 docker inspect questdb --format '{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}'
 docker stats --no-stream
 df -h / /srv/questdb-data
 ```
+
+La prueba canónica de QuestDB para scripting es `/exec`. La raíz `http://127.0.0.1:9000/` sirve la Web Console y no es la mejor señal de readiness para automatización.
 
 ## Comportamiento esperado bajo presion
 
