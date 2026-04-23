@@ -9,7 +9,7 @@ Backend FastAPI de solo lectura para consultar QuestDB y servir datos al dashboa
 - QuestDB sigue escuchando solo en loopback del host (`127.0.0.1:9000`) y no se expone directamente a Internet
 - la autenticacion de QuestDB se hace con `QDB_HTTP_USER` y `QDB_HTTP_PASSWORD`
 - QuestDB usa una imagen fija `questdb/questdb:9.3.5`
-- el host y el contenedor usan `nofile=2097152`, que es el doble del warning minimo recomendado visto anteriormente
+- el host y el contenedor usan `nofile=1048576`, que coincide con la recomendacion operativa oficial de QuestDB y evita el fallo de `rlimit` visto en esta VPS
 
 ## Servicios
 
@@ -58,10 +58,10 @@ sudo bash setup_https_proxy.sh --service questdb --host questdb.fronteradatalabs
 - lo formatea como ext4 y lo monta en `/srv/questdb-data`
 - persiste el mount en `/etc/fstab`
 - crea `QUESTDB_DATA_DIR` dentro del filesystem acotado
-- ajusta `fs.file-max` del host a `2097152`
+- ajusta `fs.file-max` del host a `1048576`
 - descarga la imagen objetivo de QuestDB
 - recrea el contenedor si encuentra una imagen vieja, sin tocar el storage persistente
-- levanta QuestDB con `ulimits.nofile=2097152`
+- levanta QuestDB con `ulimits.nofile=1048576`
 - verifica readiness con autenticacion HTTP
 - crea las tablas base `devices`, `deployments` y `telemetria_datos`
 

@@ -9,8 +9,8 @@ services:
       QDB_HTTP_PASSWORD: ${QDB_HTTP_PASSWORD:-}
     ulimits:
       nofile:
-        soft: 2097152
-        hard: 2097152
+        soft: 1048576
+        hard: 1048576
     ports:
       - "127.0.0.1:${QUESTDB_HTTP_PORT:-9000}:9000"
       - "127.0.0.1:${QUESTDB_PG_PORT:-8812}:8812"
