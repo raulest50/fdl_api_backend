@@ -1,41 +1,26 @@
 # Frontera Data Labs API
 
-API Python de solo lectura para consultar QuestDB y servir datos listos para el dashboard, ahora endurecida para demos en VPS con limites pequenos de logs, CPU, memoria y almacenamiento persistente.
+Backend FastAPI de solo lectura para consultar QuestDB y servir datos al dashboard, preparado para una VPS nueva con dominio propio, TLS, rate limiting en la API y QuestDB protegido con autenticacion HTTP nativa.
 
-## Stack
+## Arquitectura objetivo
+
+- `api.fronteradatalabs.com` sirve FastAPI detras de Nginx y TLS
+- `questdb.fronteradatalabs.com` sirve la Web Console y el HTTP API de QuestDB detras de Nginx y TLS
+- QuestDB sigue escuchando solo en loopback del host (`127.0.0.1:9000`) y no se expone directamente a Internet
+- la autenticacion de QuestDB se hace con `QDB_HTTP_USER` y `QDB_HTTP_PASSWORD`
+- QuestDB usa una imagen fija `questdb/questdb:9.3.5`
+- el host y el contenedor usan `nofile=2097152`, que es el doble del warning minimo recomendado visto anteriormente
+
+## Servicios
 
 - FastAPI + httpx
 - QuestDB en Docker Compose
-- Nginx + Certbot en la VPS
-- Storage loopback ext4 de 4 GB para aislar el crecimiento de QuestDB
-
-## Arquitectura de despliegue
-
-- `questdb` y `frontera-data-labs-api` viven en el mismo `docker-compose.yml`
-- ambos contenedores rotan logs con `json-file` en `1m x 2`
-- QuestDB usa una imagen fija configurable por `QUESTDB_IMAGE`
-- el backend consulta QuestDB por red interna de Compose en `http://questdb:9000`
-- QuestDB persiste datos dentro de `QUESTDB_DATA_DIR`, que debe vivir en el mount loopback de 4 GB
-- Nginx mantiene `access_log off`, limita `/health` y `/api/` a `5r/s` por IP con `burst 20`, y rota su error log a `1 MB x 2`
-
-## Endpoints
-
-- `GET /health`
-- `GET /api/deployments`
-- `GET /api/deployments/{deployment_id}`
-- `GET /api/deployments/{deployment_id}/telemetry?hours=24`
-
-## Cambios operativos relevantes
-
-- el backend reutiliza un solo `httpx.AsyncClient`
-- `GET /api/deployments` ahora deduplica en SQL y cachea 30 segundos
-- `GET /api/deployments/{deployment_id}` cachea 15 segundos
-- `GET /api/deployments/{deployment_id}/telemetry` solo acepta hasta `24` horas y agrega la serie en buckets de 5 minutos
-- el `Dockerfile` y Compose arrancan `uvicorn` con `--log-level error --no-access-log`
+- Nginx + Certbot
+- Storage loopback ext4 de 4 GB para encapsular el crecimiento de QuestDB
 
 ## Variables de entorno
 
-Ejemplo base:
+Copia `.env.example` a `.env` y completa las credenciales reales:
 
 ```env
 APP_NAME=Frontera Data Labs API
@@ -43,102 +28,105 @@ APP_VERSION=0.1.0
 API_HOST=0.0.0.0
 API_PORT=8000
 QUESTDB_BASE_URL=http://questdb:9000
-API_CORS_ORIGINS=http://localhost:5174,https://your-frontend.onrender.com
+API_CORS_ORIGINS=https://fronteradatalabs.com,https://www.fronteradatalabs.com
 QUERY_TIMEOUT_SECONDS=10
-QUESTDB_IMAGE=questdb/questdb:8.2.2
+QUESTDB_IMAGE=questdb/questdb:9.3.5
 QUESTDB_HTTP_PORT=9000
 QUESTDB_PG_PORT=8812
 QUESTDB_DATA_DIR=/srv/questdb-data/data
+QDB_HTTP_USER=change-me
+QDB_HTTP_PASSWORD=change-me-strong-password
 ```
 
-## Despliegue recomendado en la VPS
+## Flujo recomendado en la VPS
 
 ```bash
-git clone <tu-repo>
-cd FronteraDataLabs/frontera-data-labs-api
+git pull
 cp .env.example .env
 nano .env
 sudo bash setup_questdb.sh
-sudo bash setup_https_proxy.sh --host <TU_HOST>
-chmod +x deploy.sh
 ./deploy.sh
+sudo bash setup_https_proxy.sh --service api --host api.fronteradatalabs.com --email you@example.com
+sudo bash setup_https_proxy.sh --service questdb --host questdb.fronteradatalabs.com --email you@example.com
 ```
 
 ## Que hace `setup_questdb.sh`
 
+- exige que exista `.env`
+- exige `QDB_HTTP_USER` y `QDB_HTTP_PASSWORD`
 - reserva un archivo loopback de 4 GB en `/srv/questdb-data.img`
-- lo formatea como ext4
-- lo monta en `/srv/questdb-data`
+- lo formatea como ext4 y lo monta en `/srv/questdb-data`
 - persiste el mount en `/etc/fstab`
-- crea `QUESTDB_DATA_DIR` dentro de ese filesystem acotado
-- levanta el servicio `questdb` por Compose
-- aplica limites de CPU, memoria y `pids`
-- valida readiness de QuestDB contra `/exec` con timeout
-- crea las tablas `devices`, `deployments` y `telemetria_datos`
-- comprueba que esas tres tablas realmente existan antes de terminar
+- crea `QUESTDB_DATA_DIR` dentro del filesystem acotado
+- ajusta `fs.file-max` del host a `2097152`
+- descarga la imagen objetivo de QuestDB
+- recrea el contenedor si encuentra una imagen vieja, sin tocar el storage persistente
+- levanta QuestDB con `ulimits.nofile=2097152`
+- verifica readiness con autenticacion HTTP
+- crea las tablas base `devices`, `deployments` y `telemetria_datos`
 
-## Que hace `deploy.sh`
+## Que hace `setup_https_proxy.sh`
 
-- levanta `questdb` y `frontera-data-labs-api` con `docker compose up -d --build`
-- reaplica limites duros de CPU, memoria y `pids` via `docker update`
-- imprime el estado del stack y la politica de logs de ambos contenedores
+- soporta dos modos:
+  - `--service api`
+  - `--service questdb`
+- valida que el dominio resuelva a la IP publica de la VPS antes de lanzar Certbot
+- para `api`:
+  - proxy a `127.0.0.1:8000`
+  - rate limiting en `/health` y `/api/`
+- para `questdb`:
+  - proxy a `127.0.0.1:9000`
+  - no duplica auth en Nginx; deja que QuestDB responda con su propia autenticacion HTTP
+- en ambos casos:
+  - emite TLS con Let's Encrypt
+  - rota error logs de Nginx a `1 MB x 2`
 
-## Exponer temporalmente la Web Console de QuestDB
+## Hostinger: lo que debes hacer tu
 
-Por defecto, QuestDB queda privado en:
+En la zona DNS de `fronteradatalabs.com`, crea:
 
 ```text
-127.0.0.1:9000
+A  api      -> 187.124.25.26
+A  questdb  -> 187.124.25.26
 ```
 
-Si durante desarrollo quieres abrir temporalmente la consola web desde fuera, usa:
+Ademas:
 
-```bash
-sudo bash toggle_questdb_web.sh
-```
-
-El script te pedira:
-
-- `enable` para exponer la consola web publicamente
-- `disable` para volver a dejarla privada
-
-Comportamiento:
-
-- modo publico:
-  - publica la consola web de QuestDB en `http://<IP-DE-TU-VPS>:9000`
-- modo privado:
-  - vuelve a publicar la consola solo en `127.0.0.1:9000`
-
-Importante:
-
-- esto es solo para desarrollo temporal
-- el puerto `8812` sigue privado
-- antes de produccion debes volver a `disable`
+- asegurate de que `80/tcp` y `443/tcp` esten permitidos en la VPS/firewall
+- no abras `9000`, `8812` ni `8000` al exterior
+- espera propagacion DNS antes de correr los scripts de TLS
 
 ## Verificaciones rapidas
 
+QuestDB local autenticado:
+
 ```bash
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/api/deployments
-curl --get http://127.0.0.1:8000/api/deployments/<DEPLOYMENT_ID>/telemetry --data-urlencode "hours=24"
-curl --max-time 5 --get http://127.0.0.1:9000/exec --data-urlencode "query=SELECT 1;"
-curl --max-time 5 --get http://127.0.0.1:9000/exec --data-urlencode "query=SHOW TABLES;"
-docker inspect frontera-data-labs-api --format '{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}'
-docker inspect questdb --format '{{.HostConfig.LogConfig.Type}} {{json .HostConfig.LogConfig.Config}}'
-docker stats --no-stream
-df -h / /srv/questdb-data
+docker inspect questdb --format '{{.Config.Image}}'
+docker inspect questdb --format '{{.Image}}'
+docker inspect questdb --format '{{json .HostConfig.Ulimits}}'
+sysctl -n fs.file-max
+curl --max-time 5 -u "$QDB_HTTP_USER:$QDB_HTTP_PASSWORD" --get http://127.0.0.1:9000/exec --data-urlencode "query=SELECT 1;"
+curl --max-time 5 -u "$QDB_HTTP_USER:$QDB_HTTP_PASSWORD" --get http://127.0.0.1:9000/exec --data-urlencode "query=SHOW TABLES;"
 ```
 
-La prueba canónica de QuestDB para scripting es `/exec`. La raíz `http://127.0.0.1:9000/` sirve la Web Console y no es la mejor señal de readiness para automatización.
+API publica:
 
-## Comportamiento esperado bajo presion
+```bash
+curl -vk https://api.fronteradatalabs.com/health
+```
 
-- si un contenedor se vuelve ruidoso, sus logs quedan acotados a unos pocos MB
-- si hay trafico anormal, Nginx puede responder `429` en `/health` y `/api/`
-- si QuestDB crece demasiado, llenara su filesystem loopback antes de dejar sin espacio la raiz de la VPS
-- si la carga sube demasiado, los topes de CPU y memoria deben degradar el servicio antes de tumbar toda la maquina
+QuestDB publico via dominio:
 
-## Notas para el frontend
+```bash
+curl -vk -u "$QDB_HTTP_USER:$QDB_HTTP_PASSWORD" https://questdb.fronteradatalabs.com/exec --get --data-urlencode "query=SHOW TABLES;"
+```
 
-- en el dashboard Vite configura `VITE_API_BASE_URL=https://<TU_HOST>`
-- el endpoint de telemetria mantiene el mismo shape, pero ahora devuelve una serie agregada y acotada
+## Notas importantes
+
+- `questdb.fronteradatalabs.com` expone tanto la Web Console como el HTTP API de QuestDB, ambos protegidos por las credenciales nativas
+- `toggle_questdb_web.sh` queda solo como herramienta legacy/desarrollo; no hace falta usarlo para esta arquitectura con dominio propio
+- el frontend debera usar:
+
+```env
+VITE_API_BASE_URL=https://api.fronteradatalabs.com
+```
