@@ -7,6 +7,7 @@ from .config import get_settings
 from .questdb import close_questdb_client
 from .routes.deployments import router as deployments_router
 from .routes.health import router as health_router
+from .routes.iot import router as iot_router
 
 settings = get_settings()
 
@@ -29,9 +30,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.api_cors_origins,
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 app.include_router(health_router)
 app.include_router(deployments_router)
+app.include_router(iot_router)

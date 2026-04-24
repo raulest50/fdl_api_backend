@@ -6,6 +6,7 @@ Backend FastAPI de solo lectura para consultar QuestDB y servir datos al dashboa
 
 - `api.fronteradatalabs.com` sirve FastAPI detras de Nginx y TLS
 - `questdb.fronteradatalabs.com` sirve la Web Console y el HTTP API de QuestDB detras de Nginx y TLS
+- `dashboard.fronteradatalabs.com` consume la API publica del backend
 - QuestDB sigue escuchando solo en loopback del host (`127.0.0.1:9000`) y no se expone directamente a Internet
 - la autenticacion de QuestDB se hace con `QDB_HTTP_USER` y `QDB_HTTP_PASSWORD`
 - QuestDB usa una imagen fija `questdb/questdb:9.3.5`
@@ -28,7 +29,7 @@ APP_VERSION=0.1.0
 API_HOST=0.0.0.0
 API_PORT=8000
 QUESTDB_BASE_URL=http://questdb:9000
-API_CORS_ORIGINS=https://fronteradatalabs.com,https://www.fronteradatalabs.com
+API_CORS_ORIGINS=https://dashboard.fronteradatalabs.com,https://fronteradatalabs.com,https://www.fronteradatalabs.com
 QUERY_TIMEOUT_SECONDS=10
 QUESTDB_IMAGE=questdb/questdb:9.3.5
 QUESTDB_HTTP_PORT=9000
@@ -49,6 +50,18 @@ sudo bash setup_questdb.sh
 sudo bash setup_https_proxy.sh --service api --host api.fronteradatalabs.com --email you@example.com
 sudo bash setup_https_proxy.sh --service questdb --host questdb.fronteradatalabs.com --email you@example.com
 ```
+
+## Endpoints disponibles
+
+- `GET /health`
+- `GET /api/deployments`
+- `GET /api/deployments/{deployment_id}`
+- `GET /api/deployments/{deployment_id}/telemetry?hours=24`
+- `POST /api/iot/devices/register`
+- `POST /api/iot/deployments`
+- `POST /api/iot/telemetry`
+- `GET /api/iot/deployments/{deployment_id}/exists`
+- `GET /api/iot/orphans`
 
 ## Que hace `setup_questdb.sh`
 

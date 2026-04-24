@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     questdb_base_url: str = "http://127.0.0.1:9000"
+    qdb_http_user: str | None = None
+    qdb_http_password: str | None = None
     api_cors_origins_raw: str = Field(
         default="http://localhost:5174",
         alias="API_CORS_ORIGINS",

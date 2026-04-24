@@ -9,9 +9,19 @@ import time
 
 import httpx
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 from .config import get_settings
-from .models import DeploymentDetail, DeploymentNode, TelemetryPoint
+from .models import (
+    DeploymentDetail,
+    DeploymentNode,
+    IoTDeploymentCreateRequest,
+    IoTDeploymentExistsResponse,
+    IoTDeviceRegisterRequest,
+    IoTOrphanTelemetrySummary,
+    IoTTelemetryIngestRequest,
+    TelemetryPoint,
+)
 
 T = TypeVar("T")
 
@@ -57,10 +67,16 @@ class TtlCache(Generic[T]):
 
 class QuestDbClient:
     def __init__(self, base_url: str, timeout_seconds: float) -> None:
+        settings = get_settings()
+        auth: tuple[str, str] | None = None
+        if settings.qdb_http_user and settings.qdb_http_password:
+            auth = (settings.qdb_http_user, settings.qdb_http_password)
+
         self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout_seconds,
+            auth=auth,
             limits=httpx.Limits(
                 max_connections=20,
                 max_keepalive_connections=5,
@@ -96,6 +112,28 @@ class QuestDbClient:
             dict(zip(columns, row, strict=False))
             for row in dataset
         ]
+
+    async def write_ilp(self, ilp_line: str) -> None:
+        try:
+            response = await self.client.post(
+                "/write",
+                content=ilp_line.encode("utf-8"),
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"No fue posible escribir en QuestDB: {exc}",
+            ) from exc
+
+        if response.status_code not in (200, 204):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"QuestDB rechazo la escritura con estado {response.status_code}: "
+                    f"{response.text.strip()}"
+                ),
+            )
 
 
 _questdb_client: QuestDbClient | None = None
@@ -248,6 +286,61 @@ def _format_bucket_timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _escape_ilp_tag(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace(",", "\\,")
+        .replace(" ", "\\ ")
+        .replace("=", "\\=")
+    )
+
+
+def _escape_ilp_string_field(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _normalize_epoch_to_ns(value: int | float) -> int:
+    absolute = abs(value)
+
+    if absolute >= 1e17:
+        return int(value)
+    if absolute >= 1e14:
+        return int(value * 1_000)
+    if absolute >= 1e11:
+        return int(value * 1_000_000)
+    return int(value * 1_000_000_000)
+
+
+def _timestamp_to_ns(value: str | int | float) -> int:
+    if isinstance(value, (int, float)):
+        return _normalize_epoch_to_ns(value)
+
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            raise HTTPException(status_code=422, detail="timestamp no puede estar vacio.")
+
+        numeric_candidate = normalized[1:] if normalized.startswith("-") else normalized
+        if numeric_candidate.isdigit():
+            return _normalize_epoch_to_ns(int(normalized))
+
+        try:
+            numeric = float(normalized)
+        except ValueError:
+            parsed = _parse_timestamp(normalized)
+            if parsed is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="timestamp debe ser ISO 8601 UTC o epoch UTC.",
+                )
+
+            return int(parsed.timestamp() * 1_000_000_000)
+
+        return _normalize_epoch_to_ns(numeric)
+
+    raise HTTPException(status_code=422, detail="timestamp invalido.")
+
+
 def _average_or_none(total: float, count: int) -> float | None:
     if count == 0:
         return None
@@ -304,6 +397,11 @@ def _bucket_telemetry_rows(rows: list[dict[str, Any]]) -> list[TelemetryPoint]:
         )
         for bucket_start, bucket in sorted(buckets.items())
     ]
+
+
+def _clear_deployment_caches() -> None:
+    _deployments_cache.clear()
+    _deployment_detail_cache.clear()
 
 
 async def get_health() -> dict[str, str]:
@@ -440,3 +538,154 @@ async def get_deployment_telemetry(
     )
 
     return _bucket_telemetry_rows(rows)
+
+
+async def check_deployment_exists(deployment_id: str) -> dict[str, Any]:
+    client = await get_questdb_client()
+    safe_deployment_id = _escape_sql_literal(deployment_id)
+
+    rows = await client.execute(
+        f"""
+        SELECT deployment_id, board_id
+        FROM deployments
+        WHERE deployment_id = '{safe_deployment_id}'
+        ORDER BY deployed_at DESC
+        LIMIT 1;
+        """
+    )
+
+    if not rows:
+        return IoTDeploymentExistsResponse(
+            exists=False,
+            deploymentId=deployment_id,
+        ).model_dump(by_alias=True)
+
+    board_id = _normalize_optional_string(rows[0].get("board_id"))
+    return IoTDeploymentExistsResponse(
+        exists=True,
+        deploymentId=deployment_id,
+        boardId=board_id,
+    ).model_dump(by_alias=True)
+
+
+async def get_orphan_telemetry_summary() -> dict[str, Any]:
+    client = await get_questdb_client()
+    rows = await client.execute(
+        """
+        SELECT t.deployment_id
+        FROM (
+          SELECT deployment_id, max(ts) AS last_ts
+          FROM telemetria_datos
+          GROUP BY deployment_id
+        ) t
+        LEFT JOIN (
+          SELECT deployment_id
+          FROM deployments
+          LATEST ON deployed_at PARTITION BY deployment_id
+        ) d
+        ON t.deployment_id = d.deployment_id
+        WHERE d.deployment_id IS NULL
+        ORDER BY t.last_ts DESC
+        LIMIT 5;
+        """
+    )
+
+    orphan_ids = [
+        deployment_id
+        for row in rows
+        if (deployment_id := _normalize_optional_string(row.get("deployment_id")))
+    ]
+
+    count_rows = await client.execute(
+        """
+        SELECT count(*) AS orphan_count
+        FROM (
+          SELECT t.deployment_id
+          FROM (
+            SELECT deployment_id, max(ts) AS last_ts
+            FROM telemetria_datos
+            GROUP BY deployment_id
+          ) t
+          LEFT JOIN (
+            SELECT deployment_id
+            FROM deployments
+            LATEST ON deployed_at PARTITION BY deployment_id
+          ) d
+          ON t.deployment_id = d.deployment_id
+          WHERE d.deployment_id IS NULL
+        );
+        """
+    )
+
+    orphan_count = _normalize_int(count_rows[0].get("orphan_count")) if count_rows else 0
+    return IoTOrphanTelemetrySummary(
+        orphanTelemetryCount=orphan_count or 0,
+        orphanDeploymentIds=orphan_ids,
+    ).model_dump(by_alias=True)
+
+
+async def ingest_device_registration(
+    payload: IoTDeviceRegisterRequest,
+) -> dict[str, str]:
+    client = await get_questdb_client()
+    timestamp_ns = _timestamp_to_ns(payload.timestamp)
+    board_id = payload.board_id.strip()
+    sensor_type = payload.sensor_type.strip()
+
+    ilp_line = (
+        f"devices,board_id={_escape_ilp_tag(board_id)},sensor_type={_escape_ilp_tag(sensor_type)} "
+        f"registered=1i {timestamp_ns}"
+    )
+
+    await client.write_ilp(ilp_line)
+    _deployment_detail_cache.clear()
+    return {"status": "ok", "boardId": board_id}
+
+
+async def ingest_deployment(
+    payload: IoTDeploymentCreateRequest,
+) -> dict[str, str]:
+    client = await get_questdb_client()
+    timestamp_ns = _timestamp_to_ns(payload.timestamp)
+    deployment_id = payload.deployment_id.strip()
+    board_id = payload.board_id.strip()
+    location_name = payload.location_name.strip() or "unknown"
+
+    ilp_line = (
+        f"deployments,deployment_id={_escape_ilp_tag(deployment_id)},board_id={_escape_ilp_tag(board_id)} "
+        f'latitude={payload.latitude},longitude={payload.longitude},location_name="{_escape_ilp_string_field(location_name)}" '
+        f"{timestamp_ns}"
+    )
+
+    await client.write_ilp(ilp_line)
+    _clear_deployment_caches()
+    return {"status": "ok", "deploymentId": deployment_id}
+
+
+async def ingest_telemetry(
+    payload: IoTTelemetryIngestRequest,
+) -> dict[str, str]:
+    client = await get_questdb_client()
+    timestamp_ns = _timestamp_to_ns(payload.timestamp)
+    deployment_id = payload.deployment_id.strip()
+
+    existence = await check_deployment_exists(deployment_id)
+    if not existence["exists"]:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "error",
+                "code": "deployment_not_registered",
+                "deploymentId": deployment_id,
+            },
+        )
+
+    ilp_line = (
+        f"telemetria_datos,deployment_id={_escape_ilp_tag(deployment_id)} "
+        f"co2={payload.co2},temp={payload.temp},rh={payload.rh},errors={payload.errors}i "
+        f"{timestamp_ns}"
+    )
+
+    await client.write_ilp(ilp_line)
+    _deployment_detail_cache.clear()
+    return {"status": "ok", "deploymentId": deployment_id}

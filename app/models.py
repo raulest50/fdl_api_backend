@@ -47,3 +47,85 @@ class TelemetryPoint(BaseModel):
     co2: Optional[float] = None
     temp: Optional[float] = None
     rh: Optional[float] = None
+
+
+class IoTDeviceRegisterRequest(BaseModel):
+    board_id: str = Field(alias="boardId", min_length=1)
+    sensor_type: str = Field(alias="sensorType", min_length=1)
+    timestamp: str | int | float
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTDeploymentCreateRequest(BaseModel):
+    deployment_id: str = Field(alias="deploymentId", min_length=1)
+    board_id: str = Field(alias="boardId", min_length=1)
+    latitude: float
+    longitude: float
+    location_name: str = Field(default="", alias="locationName")
+    timestamp: str | int | float
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTTelemetryIngestRequest(BaseModel):
+    deployment_id: str = Field(alias="deploymentId", min_length=1)
+    co2: float
+    temp: float
+    rh: float
+    errors: int
+    timestamp: str | int | float
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTDeviceRegisterResponse(BaseModel):
+    status: str
+    board_id: str = Field(alias="boardId")
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTDeploymentResponse(BaseModel):
+    status: str
+    deployment_id: str = Field(alias="deploymentId")
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTTelemetryResponse(BaseModel):
+    status: str
+    deployment_id: str = Field(alias="deploymentId")
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTDeploymentExistsResponse(BaseModel):
+    exists: bool
+    deployment_id: str = Field(alias="deploymentId")
+    board_id: Optional[str] = Field(default=None, alias="boardId")
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class IoTOrphanTelemetrySummary(BaseModel):
+    orphan_telemetry_count: int = Field(alias="orphanTelemetryCount")
+    orphan_deployment_ids: List[str] = Field(alias="orphanDeploymentIds")
+
+    model_config = {
+        "populate_by_name": True,
+    }
