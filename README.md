@@ -78,6 +78,16 @@ sudo bash setup_https_proxy.sh --service questdb --host questdb.fronteradatalabs
 - verifica readiness con autenticacion HTTP
 - crea las tablas base `devices`, `deployments` y `telemetria_datos`
 
+## Reset total de datos
+
+Si necesitas borrar por completo los datos actuales de QuestDB y volver a partir de cero, usa:
+
+```bash
+sudo bash reset_questdb_data.sh --force
+```
+
+Este script elimina `telemetria_datos`, `deployments` y `devices`, y luego recrea las tres tablas con el mismo esquema base actual.
+
 ## Que hace `setup_https_proxy.sh`
 
 - soporta dos modos:
